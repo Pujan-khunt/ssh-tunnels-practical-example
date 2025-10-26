@@ -251,3 +251,107 @@ close the SSH process/tunnel.
 > You can use this to bypass NAT and create your laptop a server. You can run a server on your laptop on the localhost
 > and then create a tunnel from your laptop to a public facing ec2 instance. Now you just need to visit the public IP
 > provided with your ec2 instance and then you can access your server on your local computer from anywhere on the world.
+
+## Part 4: Dynamic Port Forwarding (SOCKS Proxy Server)
+
+**Scenario**: You want anonymity by preventing your ISP to see your browsing or even when you are on a public WiFi you
+don't want your browsing details to get into the hands of others. You can use a <i>SOCKS Proxy Server</i> for this exact purpose.
+
+### What is a SOCKS Proxy Server?
+A SOCKS Proxy Server essentially receives your network request that you want to make to the internet and makes it
+on behalf of you. Example you want to watch a YouTube video which has a url like [YT Video](https://www.youtube.com/watch?v=dQw4w9WgXcQ),
+your browser would resolve the domain and make the request and show you the response, but when you are using a Proxy Server the network
+request and the DNS resolution query is made by the Proxy Server and it sends the response back to your browser which the browser displays.
+
+#### Before a SOCKS Proxy Server
+```mermaid
+sequenceDiagram
+    participant Browser as Web Browser (Host)
+    participant DNS as DNS Resolver (Configured in /etc/resolv.conf (Host))
+    participant Server as Remote Web Server
+
+    %% DNS Resolution
+    Browser->>DNS: gethostbyname("example.com")<br/>→ UDP Query on port 53
+    DNS-->>Browser: 93.184.216.34
+
+    %% HTTP Request
+    Browser->>Server: TCP SYN to 93.184.216.34:80<br/>(HTTP GET /index.html)
+    Server-->>Browser: TCP SYN-ACK, followed by<br/>HTTP 200 OK + Response Body
+
+    %% Response Rendering
+    Browser->>Browser: Renders response<br/>Displays webpage contents
+```
+
+#### After a SOCKS Proxy Server
+```mermaid
+sequenceDiagram
+    participant Browser as Web Browser (Host)
+    participant SSHClient as SSH Client (Host)
+    participant SOCKSProxy as SOCKS5 Proxy (EC2 Instance via SSH Dynamic Forwarding)
+    participant DNSProxy as DNS Resolver (Configured on EC2)
+    participant Server as Remote Web Server
+
+    %% SSH Tunnel Setup
+    Browser->>SSHClient: curl --socks5-hostname 127.0.0.1:1080 https://example.com
+    SSHClient->>SOCKSProxy: ssh -D 1080 -C -q -N ec2-user@ec2-instance
+    note right of SSHClient: Creates dynamic SOCKS5 proxy<br/>listening on localhost:1080
+
+    %% Request Flow through Proxy
+    Browser->>SOCKSProxy: SOCKS5 CONNECT request for "example.com:443"
+    SOCKSProxy->>DNSProxy: dig example.com +short
+    DNSProxy-->>SOCKSProxy: 93.184.216.34
+
+    %% Outbound Request
+    SOCKSProxy->>Server: TCP SYN to 93.184.216.34:443<br/>(HTTP GET /index.html)
+    Server-->>SOCKSProxy: TCP SYN-ACK, then HTTP 200 OK + Response
+
+    %% Proxy Response Relay
+    SOCKSProxy-->>SSHClient: Forwards response through encrypted SSH tunnel
+    SSHClient-->>Browser: Sends response to ephemeral local port<br/>(e.g., 127.0.0.1:54321)
+    Browser->>Browser: Renders final content<br/>Displays webpage contents
+
+```
+
+### Part 4.1: Create a Dynamically Forwarded Port
+
+SSH creates a listener on the host machine for the specified port i.e. 1080, this port
+speaks the **SOCKS5 protocol** not HTTP. Any program that knows how to speak this protocol,
+can connect to it e.g. browsers, `curl` etc.
+
+```bash
+ssh -N -f -D 1080 -i ~/.ssh/tutorial-key.pem ubuntu@$EC2_IP
+```
+
+### Part 4.2: Configure Your Application To Use the Socks Proxy Server
+
+1. `curl`
+```bash
+# DNS Resolution on Remote (Recommended)
+curl --socks5-hostname http://localhost:1080 https://www.youtube.com/watch?v=dQw4w9WgXcQ
+
+# DNS Resolution on Host (Not Recommended as it defeats the purpose of a proxy server by leaking DNS resolution queries)
+curl --proxy socks5h://localhost:1080 https://www.youtube.com/watch?v=dQw4w9WgXcQ
+```
+
+2. **FireFox**
+    1. Open the following url on FireFox: `about:preferences`.
+    2. Scroll to the absolute bottom and open the `Settings` button under the `Network Settings` section.
+    3. Select `Manual proxy configuration`
+    4. Enter `localhost` or `127.0.0.1` in `SOCKS Host` and `1080` in `Port` fields.
+    5. Make sure to select `SOCKS v5` version and also the checkbox for `Proxy DNS when using SOCKS v5`
+    6. Press `OK` to save the changes.
+
+### Part 4.3: Verifying If The Proxy Server Is Working
+We will use https://checkip.amazonaws.com url to check our public IP.
+If the proxy server is correctly setup and working, then it should show the public IP of your proxy server
+else it would show your own public IP.
+
+1. `curl`
+
+```bash
+curl --socks5-hostname http://localhost:1080 https://checkip.amazonaws.com
+```
+
+2. **FireFox**
+
+Visit the [checkip.amazonaws.com](checkip.amazonaws.com)
